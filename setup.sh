@@ -1,5 +1,5 @@
 # Run from root directory of findingdory project folder
-conda_env_name=${CONDA_ENV_NAME:-python310}
+conda_env_name=${CONDA_ENV_NAME:-findingdory}
 python_version=${PYTHON_VERSION:-3.10}
 habitat_sim_spec=${HABITAT_SIM_SPEC:-habitat-sim=0.3.3.2026.05.16}
 torch_version=${TORCH_VERSION:-2.8.0}
