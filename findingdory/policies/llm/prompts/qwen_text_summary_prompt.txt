@@ -1,0 +1,22 @@
+You are given {chunk size} images from one short time window of a robot's past experience in a house.
+Summarize the whole window in one compact JSON object.
+Return JSON only. Do not use markdown. Do not repeat the schema. Do not list frame-by-frame captions.
+
+Output format:
+{
+  "room_name": str,
+  "picking_placing_or_navigating": str,
+  "object_being_manipulated": str,
+  "receptacle_being_manipulated": str,
+  "other_objects_in_scene": list[str]
+}
+
+Where:
+- Room name: The name of the room the robot is in.
+- Picking, placing, or navigating: Must be exactly one of "picking", "placing", or "nav".
+- Object being manipulated: The object that the robot is picking or placing, if relevant.
+- Receptacle being manipulated: The receptacle that the robot is picking up from or placing an object into, if relevant.
+- Other objects in scene: Objects present in the scene besides the main object and the receptacle.
+
+Note:
+- The robot uses a magic grasp action to pick up an object, where a gripper goes close to the object and the object gets magically picked up.

@@ -8,7 +8,11 @@ import ast
 from PIL import Image
 import numpy as np
 import torch
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from transformers import (
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    Qwen2_5_VLForConditionalGeneration,
+)
 from qwen_vl_utils import process_vision_info
 
 from findingdory.policies.llm.vlm_agent import VLMAgent
@@ -26,26 +30,56 @@ class QwenAgent(VLMAgent):
         """
         super().__init__(config)
 
+        local_files_only = getattr(config, "local_files_only", False)
+        cache_dir = getattr(config, "cache_dir", None)
+        self.model_name = config.model
+        self.model_loader = getattr(config, "model_loader", "qwen2_5_vl")
+        self.enable_thinking = getattr(config, "enable_thinking", None)
+        self.max_new_tokens = getattr(config, "max_new_tokens", 256)
+        self.local_files_only = local_files_only
+        self.cache_dir = cache_dir
+
         self.processor = AutoProcessor.from_pretrained(
             config.model,
             min_pixels=128 * 28 * 28,
             max_pixels=256 * 28 * 28,
+            use_fast=False,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
         )
 
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        from transformers import BitsAndBytesConfig
+
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            # bnb_4bit_use_double_quant=True,
+        )
+
+        model_cls = (
+            AutoModelForImageTextToText
+            if self.model_loader == "auto_image_text"
+            else Qwen2_5_VLForConditionalGeneration
+        )
+        self.model = model_cls.from_pretrained(
             config.model,
             device_map="auto",
-            torch_dtype=torch.bfloat16,
+            # torch_dtype=torch.bfloat16,
+            quantization_config=bnb_config,
             attn_implementation="flash_attention_2",
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
         ).eval()
 
     def get_vlm_response(self, images, prompt, path=None):
         torch.cuda.empty_cache()
+
         mm_prompt = None
         if path:
             mm_prompt = path
             mm_type = "video" if path.endswith(".mp4") else "image"
         elif len(images) == 1:
+        # else:
             mm_prompt = self.save_image(images[0])
             mm_type = "image"
         else:
@@ -63,10 +97,24 @@ class QwenAgent(VLMAgent):
         ]
 
         # Preparation for inference
-        text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        chat_template_kwargs = {}
+        if self.enable_thinking is not None:
+            chat_template_kwargs["enable_thinking"] = self.enable_thinking
+        try:
+            text = self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                **chat_template_kwargs,
+            )
+        except TypeError:
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         image_inputs, video_inputs, video_kwargs = process_vision_info(messages, return_video_kwargs=True)
+        for key, value in list(video_kwargs.items()):
+            if isinstance(value, list) and len(value) == 1:
+                video_kwargs[key] = value[0]
         inputs = self.processor(
             text=[text],
             images=image_inputs,
@@ -77,7 +125,7 @@ class QwenAgent(VLMAgent):
         ).to("cuda")
 
         # Inference: Generation of the output
-        generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+        generated_ids = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)
         generated_ids_trimmed = [
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -97,7 +145,6 @@ class QwenAgent(VLMAgent):
 
         # Clear CUDA cache to free up GPU memory
         torch.cuda.empty_cache()
-
         llm_response = self.get_vlm_response(frames, prompt)
         print("LLM Response: ", llm_response.encode("utf-8"))
         llm_response = self.extract_info_from_response(llm_response)

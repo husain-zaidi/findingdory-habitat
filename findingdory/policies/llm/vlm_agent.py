@@ -145,25 +145,37 @@ class VLMAgent(Agent):
         """Extract structured information from the model's response."""
         try:
             if 'json' in response or ('{' in response and '}' in response):
-                # Clean the response string
-                cleaned_response = response.strip().replace('json', '').replace('```', '')
- 
-                # Try to extract JSON by finding the first { and last } in the string
-                start_idx = cleaned_response.find('{')
-                end_idx = cleaned_response.rfind('}') + 1
-                if start_idx >= 0 and end_idx > start_idx:
-                    cleaned_response = cleaned_response[start_idx:end_idx]
-                
-                # Try different parsing methods in order of safety
-                try:
-                    return json5.loads(cleaned_response)
-                except Exception as e1:
-                    warnings.warn(f"Error parsing with json5: {e1}, trying ast.literal_eval", RuntimeWarning)
+                cleaned_response = response.strip().replace('```', '')
+
+                # Prefer a compact object that explicitly contains frame fields.
+                candidate_strings = []
+                for pattern in [
+                    r'(\{[^{}]*"frame_indices"[^{}]*\})',
+                    r"(\{[^{}]*'frame_indices'[^{}]*\})",
+                    r'(\{[^{}]*"frame_index"[^{}]*\})',
+                    r"(\{[^{}]*'frame_index'[^{}]*\})",
+                ]:
+                    candidate_strings.extend(re.findall(pattern, cleaned_response, flags=re.DOTALL))
+
+                # Fallback to the broadest JSON-looking span if nothing targeted was found.
+                if not candidate_strings:
+                    start_idx = cleaned_response.find('{')
+                    end_idx = cleaned_response.rfind('}') + 1
+                    if start_idx >= 0 and end_idx > start_idx:
+                        candidate_strings.append(cleaned_response[start_idx:end_idx])
+
+                for candidate in candidate_strings:
+                    candidate = candidate.replace('json', '').strip()
                     try:
-                        return ast.literal_eval(cleaned_response)
-                    except Exception as e2:
-                        warnings.warn(f"Error parsing with ast.literal_eval: {e2}", RuntimeWarning)
-                        return None
+                        return json5.loads(candidate)
+                    except Exception as e1:
+                        warnings.warn(f"Error parsing with json5: {e1}, trying ast.literal_eval", RuntimeWarning)
+                        try:
+                            return ast.literal_eval(candidate)
+                        except Exception as e2:
+                            warnings.warn(f"Error parsing with ast.literal_eval: {e2}", RuntimeWarning)
+                            continue
+                return None
         except Exception as e:
             warnings.warn(f"Failed to extract info from response: {response}. Error: {e}", RuntimeWarning)
             return None
@@ -306,6 +318,15 @@ class VLMAgent(Agent):
         if llm_response is not None and "frame_indices" in llm_response:
             frame_indices = llm_response['frame_indices']
             try:
+                if isinstance(frame_indices, str):
+                    frame_indices = [
+                        item.strip()
+                        for item in frame_indices.split(",")
+                        if item.strip()
+                    ]
+                elif isinstance(frame_indices, int):
+                    frame_indices = [frame_indices]
+
                 if Ellipsis in frame_indices:
                     # Qwen outputs ellipsis for some reason, we consider those episodes as failed
                     return [-1]

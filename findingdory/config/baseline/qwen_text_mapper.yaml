@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - /benchmark: findingdory_multitask
+  - /habitat/simulator/sim_sensors@habitat_baselines.eval.extra_sim_sensors.third_rgb_sensor: third_rgb_sensor
+  - _self_
+
+
+habitat_baselines:
+  video_dir: "data/outputs/qwen_text_mapper/video"
+
+  agent:
+    _target_: findingdory.policies.heuristic.text_mapper.TextMapperAgent
+    config:
+      model: "Qwen/Qwen2.5-VL-3B-Instruct"
+      cache_dir: "/home/husain/.cache/huggingface/hub"
+      local_files_only: True
+      prompt_file: "findingdory/policies/llm/prompts/qwen_prompt.txt"
+      summary_prompt_file: "findingdory/policies/llm/prompts/qwen_text_summary_prompt.txt"
+      reasoning_prompt_file: "findingdory/policies/llm/prompts/qwen_text_reasoning_prompt.txt"
+      chunk_size: 250
+      summary_chunk_size: 32
+      summary_images_per_chunk: 20
+      summary_mode: "symbolic"
+      subsample_frames: False
+      vlm_temp_folder: "data/findingdory_outputs/qwen_text_mapper/temp"
+      output_folder: "data/findingdory_outputs/qwen_text_mapper/logs"
+      pointnav_max_steps: 1000
+      low_level_policy: "greedy_follower"
+      turn_angle: 10
+      delay_between_tasks: 0
+
+  additional_success_metrics:
+    vlm_subgoal_metrics:
+      - high_level_goal_success
+      - high_level_dtg_success
+      - high_level_sem_cov_success

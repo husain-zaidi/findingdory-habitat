@@ -41,10 +41,73 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
-from pytorch3d.common.datatypes import Device, make_device
-from pytorch3d.ops import box3d_overlap
-from pytorch3d.structures import utils as struct_utils
 from torch import Tensor
+
+try:
+    from pytorch3d.common.datatypes import Device, make_device
+    from pytorch3d.ops import box3d_overlap
+    from pytorch3d.structures import utils as struct_utils
+except ImportError:
+    Device = Union[str, torch.device]
+
+    def make_device(device: Device) -> torch.device:
+        return torch.device(device)
+
+    class _StructUtils:
+        @staticmethod
+        def padded_to_list(padded: torch.Tensor, split_size: Sequence[int]):
+            return [padded[i, :size] for i, size in enumerate(split_size)]
+
+        @staticmethod
+        def list_to_padded(
+            tensors: Sequence[torch.Tensor],
+            shape: Sequence[int],
+            pad_value: float = 0.0,
+            equisized: bool = False,
+        ) -> torch.Tensor:
+            if len(tensors) == 0:
+                return torch.empty((0, *shape))
+            out = tensors[0].new_full((len(tensors), *shape), pad_value)
+            for i, tensor in enumerate(tensors):
+                slices = tuple(slice(0, size) for size in tensor.shape)
+                out[(i, *slices)] = tensor
+            return out
+
+        @staticmethod
+        def list_to_packed(tensors: Sequence[torch.Tensor]):
+            if len(tensors) == 0:
+                empty = torch.empty((0,))
+                return empty, torch.empty((0,), dtype=torch.int64), empty, empty
+            device = tensors[0].device
+            sizes = torch.tensor([len(tensor) for tensor in tensors], device=device)
+            packed = torch.cat(
+                [tensor for tensor in tensors if len(tensor) > 0],
+                dim=0,
+            )
+            first_idxs = torch.cumsum(
+                torch.cat([torch.zeros(1, dtype=torch.int64, device=device), sizes[:-1]]),
+                dim=0,
+            )
+            packed_to_scene = torch.repeat_interleave(
+                torch.arange(len(tensors), dtype=torch.int64, device=device),
+                sizes,
+            )
+            return packed, sizes, first_idxs, packed_to_scene
+
+    struct_utils = _StructUtils()
+
+    def box3d_overlap(boxes1: Tensor, boxes2: Tensor, eps: float = 1e-4):
+        mins1, maxes1 = boxes1.min(dim=1).values, boxes1.max(dim=1).values
+        mins2, maxes2 = boxes2.min(dim=1).values, boxes2.max(dim=1).values
+        inter_mins = torch.maximum(mins1[:, None, :], mins2[None, :, :])
+        inter_maxes = torch.minimum(maxes1[:, None, :], maxes2[None, :, :])
+        inter_dims = (inter_maxes - inter_mins).clamp_min(0)
+        inter_vol = inter_dims.prod(dim=-1)
+        vol1 = (maxes1 - mins1).clamp_min(0).prod(dim=-1)
+        vol2 = (maxes2 - mins2).clamp_min(0).prod(dim=-1)
+        union = vol1[:, None] + vol2[None, :] - inter_vol
+        iou = inter_vol / union.clamp_min(eps)
+        return inter_vol, iou
 
 
 class BBoxes3D:

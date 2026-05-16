@@ -9,6 +9,9 @@ import random
 import torch
 from omegaconf import DictConfig
 
+if not hasattr(np, "bool8"):
+    np.bool8 = np.bool_
+
 from habitat.config.default import patch_config
 from habitat.core.env import Env
 from habitat.core.logging import logger
@@ -22,7 +25,7 @@ from findingdory.dataset.utils import save_mp4
 
 from findingdory.policies.end_to_end.qwen_imagenav_agent import QwenImageNavAgent
 from findingdory.policies.heuristic.vlm_mapper import VLMMapperAgent
-
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 def save_metrics_json(fname, per_ep_task_metrics):
     with open(fname, 'w') as f:
@@ -171,6 +174,12 @@ def main(cfg: "DictConfig"):
     
     env = Env(config=cfg)
     agent = hydra.utils.instantiate(cfg.habitat_baselines.agent)
+    
+    # For VLMMapperAgent, set the full config needed for semantic mapper
+    if hasattr(agent, 'env_config'):
+        agent.env_config = cfg
+    if hasattr(agent, 'sim'):
+        agent.sim = env._task._sim
 
     start_episode = 0
     for i in range(start_episode):

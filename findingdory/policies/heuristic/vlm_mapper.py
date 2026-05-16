@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import magnum as mn
+import habitat_sim
 
 from findingdory.policies.llm.qwen_agent import QwenAgent
 import findingdory.task
@@ -17,6 +18,7 @@ from habitat.sims.habitat_simulator.actions import HabitatSimActions
 from findingdory.utils import get_device
 from findingdory.dataset.utils import magnum_to_python_quaternion
 from findingdory.dataset.utils import get_agent_yaw, coeff_to_yaw
+from findingdory.policies.heuristic.oracle_agent import DummyAgent
 
 from findingdory.policies.heuristic.mapping.config_utils import get_config as get_mapper_config
 from findingdory.policies.heuristic.mapping.semantic_mapper_agent import SemanticMapperAgent
@@ -32,17 +34,21 @@ class VLMMapperAgent(QwenAgent):
 
     def __init__(self, config) -> None:
         """
-        :param config_paths: file to be used for creating the environment
-        :param eval_remote: boolean indicating whether evaluation should be run remotely or locally
+        :param config: agent-specific configuration from habitat_baselines.agent.config
         """
-        super().__init__(config.habitat_baselines.agent.config)
-        self.env_config = config
+        super().__init__(config)
+        self.env_config = None  # Will be set by run_findingdory_eval.py
         self.episode_index = 0
         self.task_id = None
+        self.subsample_frames = config.subsample_frames
+        self.chunk_size = config.chunk_size
+        self.low_level_policy = getattr(config, "low_level_policy", "semantic_mapper")
+        self.sim = None
+        self._greedy_follower = None
         
         self._set_nav_goals = False
-        self._pointnav_max_steps = config.habitat_baselines.agent.config.pointnav_max_steps
-        self.turn_angle = self.env_config.habitat.simulator.turn_angle
+        self._pointnav_max_steps = config.pointnav_max_steps
+        self.turn_angle = config.turn_angle
                 
     def reset(self):
         super().reset()
@@ -64,6 +70,7 @@ class VLMMapperAgent(QwenAgent):
         self._rotate_in_place_mode = False
         self._rotate_in_place_executed = False
         self._global_obstacle_map = None
+        self._init_greedy_follower()
 
     def init_semantic_mapper(self):
         '''
@@ -72,6 +79,22 @@ class VLMMapperAgent(QwenAgent):
         mapper_config = get_mapper_config(self.env_config)
         self.mapper_env = SemanticMappingEnv(config=mapper_config.habitat.task.semantic_mapper)
         self.mapper_agent = SemanticMapperAgent(config=mapper_config.habitat.task.semantic_mapper)
+
+    def _init_greedy_follower(self):
+        if self.low_level_policy != "greedy_follower" or self.sim is None:
+            self._greedy_follower = None
+            return
+
+        self._greedy_follower = self.sim.make_greedy_follower(
+            agent_id=0,
+            goal_radius=self.sim.habitat_config.forward_step_size,
+            stop_key=HabitatSimActions.stop,
+            forward_key=HabitatSimActions.move_forward,
+            left_key=HabitatSimActions.turn_left,
+            right_key=HabitatSimActions.turn_right,
+        )
+        self._greedy_follower.agent = DummyAgent(self.sim)
+        self._greedy_follower.reset()
 
     def reset_new_task(self, task_id):
         self.action_index = 0
@@ -87,6 +110,8 @@ class VLMMapperAgent(QwenAgent):
         self.nav_goal_targets = []
         self._rotate_in_place_mode = False
         self._rotate_in_place_executed = False
+        if self._greedy_follower is not None:
+            self._greedy_follower.reset()
         
         print("Reset low level policy to evaluate next instruction in queue !")
     
@@ -138,7 +163,8 @@ class VLMMapperAgent(QwenAgent):
 
                     self._vlm_frames_processed = True
                 
-                self.nav_indices, _, _  = self.run_vlm(self._frames, lang_goal)
+                # self.nav_indices, _, _  = self.run_vlm(self._frames, lang_goal)
+                self.nav_indices = self.run_vlm(self._frames, lang_goal)
                 self.num_nav_targets = len(self.nav_indices)
                                     
                 # The predicted VLM subgoals need to be verified for task success -> so we return the predicted subgoals as an "action_dict" and pass it to the task for PDDL verification
@@ -148,6 +174,11 @@ class VLMMapperAgent(QwenAgent):
                 output_nav_indices = [self._frame_num_to_original_frame_num[idx] for idx in clipped_indices]
                 self._clipped_indices = clipped_indices
                 
+                print(
+                    "--------------------------> Predicted frame index mapping "
+                    "(VLM/subsampled -> clipped subsampled -> original trajectory): ",
+                    list(zip(self.nav_indices, clipped_indices, output_nav_indices)),
+                )
                 print("--------------------------> Predicted (clipped) frame indices mapped to original indices: ", output_nav_indices)
 
                 # The predicted VLM subgoals need to be verified for task success -> so we return the predicted subgoals as an "action_dict" and pass it to the task for PDDL verification
@@ -173,7 +204,10 @@ class VLMMapperAgent(QwenAgent):
             if not self._set_nav_goals:
                 # Append the goal image for each valid index
                 for index in self._clipped_indices:
-                    self.nav_goal_targets.append(self._global_poses[index])
+                    if self.low_level_policy == "greedy_follower":
+                        self.nav_goal_targets.append(self._agent_states[index])
+                    else:
+                        self.nav_goal_targets.append(self._global_poses[index])
                 self._set_nav_goals = True
                 
             # Start global pointnav to VLM selected image goal
@@ -191,6 +225,40 @@ class VLMMapperAgent(QwenAgent):
                 
             # Get the pointnav global pose target for current subgoal
             target_pose = self.nav_goal_targets[self._cur_subgoal_idx]
+
+            if self.low_level_policy == "greedy_follower" and self._greedy_follower is not None:
+                target_position = target_pose.position
+                target_position = np.asarray(target_position).reshape(-1)[:3]
+                target_position = mn.Vector3(*[float(v) for v in target_position])
+                try:
+                    greedy_action = self._greedy_follower.next_action_along(target_position)
+                except habitat_sim.errors.GreedyFollowerError:
+                    greedy_action = HabitatSimActions.stop
+
+                if greedy_action == HabitatSimActions.stop:
+                    rotate_action = self.turn_towards_goal(obs)
+                    if rotate_action == HabitatSimActions.stop:
+                        self._cur_subgoal_idx += 1
+                        print(f"[Greedy Follower] Reached subgoal {self._cur_subgoal_idx} !")
+                        action = {
+                            "action": ("pddl_intermediate_stop"),
+                            "action_args": {},
+                        } if self._cur_subgoal_idx >= len(self.nav_goal_targets) else {
+                            "action": HabitatSimActions.stop,
+                        }
+                    else:
+                        print(f"[Greedy Follower] rotate action: {rotate_action}")
+                        action = {"action": rotate_action}
+                else:
+                    print(f"[Greedy Follower] action: {greedy_action}")
+                    action = {"action": greedy_action}
+
+                sem_map_vis, sem_map_frame, obstacle_map_vis = (
+                    self._last_sem_map_vis,
+                    self._last_sem_map_frame,
+                    self._last_obstacle_map_vis,
+                )
+                return action, (sem_map_vis, sem_map_frame, obstacle_map_vis)
             
             mapper_observation = self.mapper_env._preprocess_obs(obs)
             planner_action, mapper_info, _, _, planner_success = self.mapper_agent.act(mapper_observation, obs["can_take_action"], target_pose, self._global_obstacle_map)

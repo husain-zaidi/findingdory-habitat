@@ -151,3 +151,5 @@ findingdory/apis
 apis/
 findingdory/.vscode
 findingdory/.triton
+datadump/
+Results/

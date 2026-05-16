@@ -4,8 +4,11 @@ setup(
     packages=["findingdory"],
     version="0.1",
     install_requires=[
+        "numpy>=2,<2.4",
         "pandas",
+        "pillow==10.4.0",
         "rtree",
+        "scipy>=1.13.0",
         "wandb",
         "ipython",
         "ipdb",
@@ -13,13 +16,14 @@ setup(
     ],
     extras_require={
         "vlm_baseline": [
-            "google-generativeai==0.8.3",
-            "protobuf==3.20.2",
-            "qwen-vl-utils",
-            "openai",
-            "transformers",
             "accelerate",
-            "flash-attn @ git+https://github.com/Dao-AILab/flash-attention.git",
+            "av",
+            "bitsandbytes",
+            "einops",
+            "protobuf==3.20.1",
+            "qwen-vl-utils[decord]",
+            "openai",
+            "transformers @ git+https://github.com/huggingface/transformers.git@main",
         ],
         "mapping_baseline": [
             "torch_geometric",

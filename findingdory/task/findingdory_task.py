@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os.path as osp
+import pprint
 from typing import Dict, List
 from collections import defaultdict
 import copy
@@ -1402,6 +1403,8 @@ class FindingDoryTask(OVMMDynNavRLEnv):
         for idx,obj_name in self._sim._candidate_obj_idx_to_rigid_obj_handle.items():
             obj = rom.get_object_by_handle(obj_name)
             region = self._sim.semantic_scene.get_regions_for_point(obj.com)
+            if len(region) == 0 or region[0] >= len(self._sim.semantic_scene.regions):
+                continue
             region_name = self._sim.semantic_scene.regions[region[0]].id
             region_to_candidate_obj_idx_map[region_name].append(convert_to_ordinal(idx))
             region_to_candidate_obj_cat_map[region_name].append(self._sim.ep_info.candidate_objects[idx].object_category)
@@ -1414,6 +1417,8 @@ class FindingDoryTask(OVMMDynNavRLEnv):
         self._high_level_nav_indices = nav_indices
         goal_states = action["action_args"]["nav_goal_states"]
         nav_mode_flags = action["action_args"]["nav_mode_flag"]
+
+        self._log_high_level_goal_comparison(nav_indices)
         
         # Track an invalid response from VLM
         if len(nav_indices) == 1 and nav_indices[0] == -1:
@@ -1446,6 +1451,79 @@ class FindingDoryTask(OVMMDynNavRLEnv):
             self.assign_and_validate_high_level_goal(goal_states, nav_mode_flags)
             print(f"--------------------------> Did VLM locate the image frame successfully ?: {self._high_level_goal_success}")
             print(f"Full Success Verification Metrics: {self._full_success_metrics}")
+
+    def _log_high_level_goal_comparison(self, nav_indices):
+        instruction = self._sim.ep_info.instructions[self._chosen_instr_idx]
+        debug_info = self._get_oracle_goal_debug_info(instruction)
+        message = (
+            "\n--------------------------> High-level goal comparison\n"
+            f"Episode id: {self._sim.ep_info.episode_id}\n"
+            f"Instruction id: {self._chosen_instr_idx}\n"
+            f"Instruction: {instruction.lang}\n"
+            f"Predicted frame indices: {nav_indices}\n"
+            "Predicted frame index space: original trajectory frame indices after mapping from any VLM subsampling.\n"
+            f"Predicted subgoal count: {len(nav_indices)}\n"
+            f"Actual subgoal count: {self._num_actual_targets}\n"
+            f"Actual subgoals:\n{pprint.pformat(debug_info['actual_subgoals'], width=120)}\n"
+            f"Ground-truth goal debug:\n{pprint.pformat(debug_info, width=120)}\n"
+        )
+        print(message)
+        logger.info(message)
+
+    def _get_oracle_goal_debug_info(self, instruction):
+        valid_entities = []
+        if self.goal_expr is not None:
+            for sub_exprs in self.goal_expr.sub_exprs:
+                valid_entities.append(sub_exprs.sub_exprs[0]._arg_values[0].name)
+
+        multi_goal_task = instruction.sequential_goals
+        ordered_entities = None
+        if isinstance(multi_goal_task, dict) and multi_goal_task.get("ordered"):
+            ordered_entities = []
+            for idx in self.pddl.sim_info.sequential_goals["sub_expr_sequence"]:
+                if idx < len(valid_entities):
+                    ordered_entities.append(valid_entities[idx])
+
+        entities_to_report = ordered_entities or valid_entities
+        entity_keyframes = {}
+        actual_subgoals = []
+        for subgoal_index, entity in enumerate(entities_to_report):
+            frames = self._get_valid_keyframes_for_entity(entity)
+            entity_keyframes[entity] = frames or [-1]
+            actual_subgoals.append(
+                {
+                    "subgoal_index": subgoal_index,
+                    "entity": entity,
+                    "valid_original_frame_indices": frames or [-1],
+                }
+            )
+
+        combined_solution = []
+        if not multi_goal_task:
+            for frames in entity_keyframes.values():
+                combined_solution.extend(frames)
+            oracle_solution = [sorted(set(combined_solution))]
+        else:
+            oracle_solution = [
+                sorted(set(frames))
+                for frames in entity_keyframes.values()
+            ]
+
+        return {
+            "sequential_goals": multi_goal_task,
+            "goal_entities": valid_entities,
+            "ordered_goal_entities": ordered_entities,
+            "actual_subgoals": actual_subgoals,
+            "entity_keyframes": entity_keyframes,
+            "oracle_solution": oracle_solution,
+        }
+
+    def _get_valid_keyframes_for_entity(self, entity):
+        frames = list(self._entity_keyframes.get(entity) or [])
+        if entity in self.connected_recep_names:
+            for connected_recep in self.connected_recep_names[entity]:
+                frames.extend(self._entity_keyframes.get(connected_recep) or [])
+        return sorted(set(frames))
 
     def assign_and_validate_high_level_goal(self, high_level_goal_states, nav_mode_flags):
         

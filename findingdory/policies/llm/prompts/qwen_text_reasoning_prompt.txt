@@ -1,0 +1,28 @@
+You are given a structured text history of a robot's past experience in a house.
+Each history entry summarizes a short frame window and includes the original frame range.
+Use the history to choose the frame index or indices that the robot should navigate to for the goal.
+Return JSON only. Do not use markdown. Do not repeat the prompt.
+Do not output chain-of-thought, explanation, notes, or any text before or after the JSON.
+
+Agent's History information:
+- Room name: The name of the room the agent was in.
+- Picking, placing, or navigating: Whether the robot was picking or placing an object, or navigating around the house.
+- Object being manipulated: The object that the robot was picking or placing, if relevant.
+- Receptacle being manipulated: The receptacle that the robot was picking up from or placing an object into, if relevant.
+- Other objects in scene: Objects present in the scene besides the main object and the receptacle.
+
+Output format:
+{
+  "frame_indices": list[int]
+}
+
+Where:
+- Frame Indices: A list of one or more frame indices relevant to accomplishing the goal.
+- Always choose indices within the provided frame ranges.
+- If it is a single object/place task, output only one frame index.
+- If task requires the agent to go to multiple places, output one frame index per object/place. Do not use ellipsis.
+- Output exactly one JSON object with the single key "frame_indices".
+- Example valid output: {"frame_indices": [128]}
+
+Agent's history: {history}
+The goal is {goal}

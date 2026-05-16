@@ -179,39 +179,56 @@ def create_final_image(
         * 255
     ).astype(np.uint8)
 
-    # write this information on a new image
-    # create a new image with the same size as the rgb image
-    new_image = np.ones((map_height, 2*rgb.shape[1], 3), dtype=np.uint8) * 255
+    text_details_width = 640
+    # write this information on a fixed-width text panel
+    new_image = np.ones((map_height, text_details_width, 3), dtype=np.uint8) * 255
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.4
     y_delta = 15
     x_delta = 125
     object_rows = 6
+    left_x = 10
+    right_x = 350
+    left_col_width = right_x - left_x - 20
+
+    def put_wrapped_text(image, text, origin, max_width, line_height):
+        x, y = origin
+        words = str(text).split()
+        lines = []
+        cur_line = ""
+        for word in words:
+            candidate = word if not cur_line else f"{cur_line} {word}"
+            candidate_width = cv2.getTextSize(candidate, font, font_scale, 1)[0][0]
+            if candidate_width <= max_width or not cur_line:
+                cur_line = candidate
+            else:
+                lines.append(cur_line)
+                cur_line = word
+        if cur_line:
+            lines.append(cur_line)
+
+        for line in lines:
+            image = cv2.putText(
+                image,
+                line,
+                (x, y),
+                font,
+                font_scale,
+                (0, 0, 0),
+                1,
+                cv2.LINE_AA,
+            )
+            y += line_height
+        return image, y
 
     y_position = y_delta
-    x_position = 10
-    new_image = cv2.putText(
-        new_image,
-        f"Goal: {goal_name}",
-        (x_position, y_position),
-        font,
-        font_scale,
-        (0, 0, 0),
-        1,
-        cv2.LINE_AA,
+    x_position = left_x
+    new_image, y_position = put_wrapped_text(
+        new_image, f"Goal: {goal_name}", (x_position, y_position), left_col_width, y_delta
     )
-    y_position += y_delta
-    new_image = cv2.putText(
-        new_image,
-        f"Action: {action}",
-        (x_position, y_position),
-        font,
-        font_scale,
-        (0, 0, 0),
-        1,
-        cv2.LINE_AA,
+    new_image, y_position = put_wrapped_text(
+        new_image, f"Action: {action}", (x_position, y_position), left_col_width, y_delta
     )
-    y_position += y_delta
     new_image = cv2.putText(
         new_image,
         f"Time of Day: {time_of_day}",
@@ -224,7 +241,7 @@ def create_final_image(
     )
 
     y_position = y_delta
-    x_position = x_delta * 2
+    x_position = right_x
     new_image = cv2.putText(
         new_image,
         f"Robot Region IDs: {str(robot_region_ids)}",
@@ -359,7 +376,6 @@ def create_final_image(
     else:
         bottom_height = max(sem_map_vis.shape[0], obstacle_map_vis.shape[0])
     
-    text_details_width = 640
     total_bottom_width = text_details_width
     if has_top_down_map:
         total_bottom_width += top_down_map.shape[1]
