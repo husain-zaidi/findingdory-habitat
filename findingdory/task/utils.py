@@ -119,8 +119,12 @@ def get_closest_dist_to_region(
     
     island_index = sim.pathfinder.get_island(source_point)
 
-    # First try the center of the region
+    # Habitat semantic AABB bindings vary across versions: some expose
+    # `center` as a value, others as a callable. Normalize before using it
+    # with the pathfinder API.
     region_center = region.aabb.center
+    if callable(region_center):
+        region_center = region_center()
     region_center_snap = sim.pathfinder.snap_point(
         region_center, island_index=island_index
     )

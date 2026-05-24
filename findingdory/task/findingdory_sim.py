@@ -34,6 +34,21 @@ import magnum as mn
 import os.path as osp
 import numpy as np
 
+
+def _to_magnum_transform(raw_transform, obj_handle: str) -> mn.Matrix4:
+    transform = np.asarray(raw_transform, dtype=np.float32)
+    # Older datasets stored transforms transposed, but current FindingDory
+    # episodes deserialize to the standard 4x4 layout with translation in
+    # the last column. Handle both formats so object placement stays stable
+    # across Habitat/Python upgrades.
+    if np.allclose(transform[3], [0.0, 0.0, 0.0, 1.0], atol=1e-5):
+        return mn.Matrix4(transform)
+    if np.allclose(transform[:, 3], [0.0, 0.0, 0.0, 1.0], atol=1e-5):
+        return mn.Matrix4(transform.T)
+    raise ValueError(
+        f"Unexpected rigid object transform layout for {obj_handle}: {transform}"
+    )
+
 @registry.register_simulator(name="FindingDorySim-v0")
 class FindingDorySim(RearrangeSim):
     def _setup_targets(self, ep_info):
@@ -48,6 +63,37 @@ class FindingDorySim(RearrangeSim):
             self.valid_goal_rec_names = [
                 g.object_name for g in ep_info.candidate_start_receps
             ]
+
+    def reset(self):
+        super().reset()
+
+        if self._load_objs and getattr(self, "ep_info", None) is not None:
+            # SimulatorBackend.reset restores the initial rigid-body state after
+            # reconfigure, so re-apply the episode clutter transforms here.
+            self._add_objs(self.ep_info, should_add_objects=False, new_scene=False)
+            self._setup_targets(self.ep_info)
+
+            rom = self.get_rigid_object_manager()
+            scene_pos = self.get_scene_pos()
+            self.target_start_pos = np.array(
+                [
+                    scene_pos[
+                        self._scene_obj_ids.index(
+                            rom.get_object_by_handle(t_handle).object_id
+                        )
+                    ]
+                    for t_handle, _ in self._targets.items()
+                ]
+            )
+            self._draw_bb_objs = [
+                rom.get_object_by_handle(obj_handle).object_id
+                for obj_handle in self._targets
+            ]
+
+            if self._should_setup_semantic_ids:
+                self._setup_semantic_ids()
+
+        return None
 
     def _create_recep_info(
         self, scene_id: str, ignore_handles: List[str]
@@ -115,6 +161,7 @@ class FindingDorySim(RearrangeSim):
         # Load clutter objects:
         rom = self.get_rigid_object_manager()
         obj_counts: Dict[str, int] = defaultdict(int)
+        loaded_obj_transforms = []
 
         self._handle_to_object_id = {}
         if should_add_objects:
@@ -182,10 +229,7 @@ class FindingDorySim(RearrangeSim):
                 )
                 other_obj_handle = ro.handle
                 
-            # The saved matrices need to be flipped when reloading.
-            ro.transformation = mn.Matrix4(
-                [[transform[j][i] for j in range(4)] for i in range(4)]
-            )
+            ro.transformation = _to_magnum_transform(transform, obj_handle)
             ro.angular_velocity = mn.Vector3.zero_init()
             ro.linear_velocity = mn.Vector3.zero_init()
 
@@ -202,6 +246,7 @@ class FindingDorySim(RearrangeSim):
                 self._handle_to_object_id[ref_handle] = rel_idx
 
             obj_counts[obj_handle] += 1
+            loaded_obj_transforms.append((other_obj_handle, transform, obj_handle))
 
             # Create a mapping between candidate object indices and the rigid object handle name as there maybe multiple candidate objects with same object_name
             if obj_handle in candidate_obj_names:
@@ -230,6 +275,15 @@ class FindingDorySim(RearrangeSim):
                             assert idx not in self._candidate_obj_noninteracted_idx_to_rigid_obj_handle.keys(), "While adding rigid objects to sim, same rigid object found multiple times !"
                             self._candidate_obj_noninteracted_idx_to_rigid_obj_handle[idx] = other_obj_handle
                             break
+
+        # Re-apply the episode transforms after all rigid objects are present.
+        # Freshly added objects can lose their initial transform during the rest
+        # of the load path, while a second pass is stable.
+        for rigid_handle, transform, obj_handle in loaded_obj_transforms:
+            ro = rom.get_object_by_handle(rigid_handle)
+            ro.transformation = _to_magnum_transform(transform, obj_handle)
+            ro.angular_velocity = mn.Vector3.zero_init()
+            ro.linear_velocity = mn.Vector3.zero_init()
 
         if new_scene:
             self._receptacles = self._create_recep_info(

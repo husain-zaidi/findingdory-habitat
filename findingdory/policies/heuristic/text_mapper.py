@@ -24,6 +24,7 @@ class TextMapperAgent(VLMMapperAgent):
 
     def __init__(self, config) -> None:
         super().__init__(config)
+        self.cache_full_observations = True
         self.summary_prompt = load_text(config.summary_prompt_file)
         self.reasoning_prompt = load_text(config.reasoning_prompt_file)
         self.summary_chunk_size = min(config.summary_chunk_size, 250)

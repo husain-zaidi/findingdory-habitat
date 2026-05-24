@@ -406,6 +406,7 @@ class FindingDoryTask(OVMMDynNavRLEnv):
         self._num_data_collection_steps = 0
         self._num_actual_targets = None
         self._oracle_agent_timeout = False
+        self._oracle_nav_place_stuck_steps = 0
                 
         # Store the original PDDL predicate thresholds (as we will modify them dynamcially to test for various success metrics)
         self._orig_pddl_predicates = copy.deepcopy(self.pddl.predicates)

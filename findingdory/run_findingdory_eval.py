@@ -90,7 +90,8 @@ def evaluate(
 
         data_collector.reset()
 
-        data_collector.update_metadata(observations)
+        if observations.get("can_take_action", 0):
+            data_collector.update_metadata(observations)
 
         pbar1 = tqdm(total=env._max_episode_steps, miniters=100)
         # Perform data collection in current episode
@@ -121,7 +122,7 @@ def evaluate(
                 agent.reset_new_task(env._task.current_task_id)
                 print("Reset agent for new task !")
 
-            if isinstance(agent, VLMMapperAgent):     
+            if isinstance(agent, VLMMapperAgent) and observations.get("can_take_action", 0):     
                 data_collector.update_metadata(observations, sem_map_result)
             pbar1.update(1)
             

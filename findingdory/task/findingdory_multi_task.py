@@ -43,12 +43,13 @@ class FindingDoryMultiTask(FindingDoryTask):
         super().reset(episode)
         
         self._instructions_to_evaluate = list(self.config.instructions_to_evaluate)
-        
-        # Evaluate all tasks sequentially if user specifies [-1] as the instructions to evaluate
-        if len(self._instructions_to_evaluate) == 1 and self._instructions_to_evaluate[0] == -1:
-            self._instructions_to_evaluate = []
-            for instr in episode.instructions:
-                self._instructions_to_evaluate.append(instr.task_id)
+        if (
+            len(self._instructions_to_evaluate) == 1
+            and self._instructions_to_evaluate[0] == -1
+        ):
+            self._instructions_to_evaluate = [
+                instr.task_id for instr in episode.instructions
+            ]
         
         next_instr_id = self._find_next_instruction_idx(episode.episode_id)
         self._chosen_instr_idx = next_instr_id
@@ -206,17 +207,20 @@ class FindingDoryMultiTask(FindingDoryTask):
         
         # If we encounter a stop action, it implies either the high level goals lead to task failure or the low level policy has invoked a STOP action
         # In either case, we move to the next task instruction (if there is one remaining) to be evaluated and reset the PDDL-related objects for the new evaluation
-        if action["action"] == HabitatSimActions.stop or action["action"] == "pddl_intermediate_stop":                
-            next_instr_id = self._find_next_instruction_idx(episode.episode_id)
-            if next_instr_id != -1:
-                self._switch_evaluation_to_new_task(episode, action, self._last_observation, next_instr_id)
-                action = {
-                    "action": ("arm_action"),
-                    "action_args": {"arm_action": np.zeros(10), "grip_action": [0.0, 0.0, 0.0]},
-                }
-                self._switch_to_new_task = True
+        if action["action"] == HabitatSimActions.stop or action["action"] == "pddl_intermediate_stop":
+            if self._oracle_agent_timeout:
+                print("Oracle data collection timed out -- ending task without switching instructions !")
             else:
-                print("All instructions exhausted -- ending task !")
+                next_instr_id = self._find_next_instruction_idx(episode.episode_id)
+                if next_instr_id != -1:
+                    self._switch_evaluation_to_new_task(episode, action, self._last_observation, next_instr_id)
+                    action = {
+                        "action": ("arm_action"),
+                        "action_args": {"arm_action": np.zeros(10), "grip_action": [0.0, 0.0, 0.0]},
+                    }
+                    self._switch_to_new_task = True
+                else:
+                    print("All instructions exhausted -- ending task !")
                 
         # Check if the low level policy needs to switch to a new subgoal (for multi-goal tasks) and change the action to a pddl_intermediate_stop for subgoal verification
         # Also, if the low level policy is unable to generate any valid action, we siwtch to next instruciton in queue
@@ -239,7 +243,28 @@ class FindingDoryMultiTask(FindingDoryTask):
 
         self.num_steps += 1
         self.last_action = action
+        pre_step_agent_pos = np.array(self._sim.get_agent_state().position)
         self._last_observation = super(FindingDoryTask, self).step(*args, action=action, episode=episode, **kwargs)
+
+        post_step_agent_pos = np.array(self._sim.get_agent_state().position)
+        if (
+            self._data_collection_phase
+            and self.oracle_agent.current_policy == "nav_place"
+            and self.oracle_agent.get_current_action_name == "move_forward"
+            and np.linalg.norm(post_step_agent_pos - pre_step_agent_pos) < 1e-4
+        ):
+            self._oracle_nav_place_stuck_steps += 1
+        else:
+            self._oracle_nav_place_stuck_steps = 0
+
+        # Oracle place already teleports to the exact place viewpoint, so if
+        # nav_place keeps colliding without advancing, skip the walk-up and let
+        # the existing place routine recover.
+        if self._oracle_nav_place_stuck_steps >= 75:
+            print("Oracle nav_place stalled -- switching directly to place routine")
+            self.oracle_agent.current_policy = "place"
+            self.oracle_agent.place_task_step = 0
+            self._oracle_nav_place_stuck_steps = 0
         
         if update_task_pos:
             # Update the task position data after observation is updated

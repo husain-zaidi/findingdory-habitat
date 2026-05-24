@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import os
 import random
 import time
@@ -42,6 +43,7 @@ class VLMMapperAgent(QwenAgent):
         self.task_id = None
         self.subsample_frames = config.subsample_frames
         self.chunk_size = config.chunk_size
+        self.cache_full_observations = getattr(config, "cache_full_observations", False)
         self.low_level_policy = getattr(config, "low_level_policy", "semantic_mapper")
         self.sim = None
         self._greedy_follower = None
@@ -114,6 +116,20 @@ class VLMMapperAgent(QwenAgent):
             self._greedy_follower.reset()
         
         print("Reset low level policy to evaluate next instruction in queue !")
+
+    def _cache_vlm_frame(self, obs, agent_state):
+        if self.cache_full_observations:
+            cached_obs = obs
+        else:
+            cached_obs = {
+                "head_rgb": np.asarray(obs["head_rgb"]).copy(),
+                "time_of_day": obs.get("time_of_day", None),
+                "manipulation_mode": bool(obs["manipulation_mode"]),
+            }
+
+        self._observations.append(cached_obs)
+        self._agent_states.append(copy.deepcopy(agent_state))
+        self._agent_in_nav_mode.append(not obs["manipulation_mode"])
     
     def act(self, obs):
         r"""..
@@ -358,9 +374,7 @@ class VLMMapperAgent(QwenAgent):
         else:            
             # Cache the observations and agent states for subsequent high level goal success verification
             # We only add observations when data collection is being done as we dont need to cache the observations/states when the low level policy operates
-            self._observations.append(obs)
-            self._agent_states.append(agent_state)
-            self._agent_in_nav_mode.append(not obs["manipulation_mode"])
+            self._cache_vlm_frame(obs, agent_state)
 
             # Perform semantic mapping only in navigation mode as mapping in manipulation mode smears the map
             if not obs["manipulation_mode"]:
