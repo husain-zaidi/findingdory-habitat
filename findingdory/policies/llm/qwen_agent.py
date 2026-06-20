@@ -17,6 +17,7 @@ from qwen_vl_utils import process_vision_info
 
 from findingdory.policies.llm.vlm_agent import VLMAgent
 from findingdory.policies.llm.utils import save_response
+from habitat.core.logging import logger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -145,12 +146,17 @@ class QwenAgent(VLMAgent):
 
         # Clear CUDA cache to free up GPU memory
         torch.cuda.empty_cache()
-        llm_response = self.get_vlm_response(frames, prompt)
-        print("LLM Response: ", llm_response.encode("utf-8"))
-        llm_response = self.extract_info_from_response(llm_response)
+        llm_response_raw = self.get_vlm_response(frames, prompt)
+        # Print the full raw LLM response (including COT/thinking)
+        logger.info("=" * 80)
+        logger.info(f">>> RAW LLM RESPONSE (full output including COT/thinking):")
+        logger.info(llm_response_raw)
+        logger.info("<<< END RAW LLM RESPONSE")
+        logger.info("=" * 80)
+        llm_response = self.extract_info_from_response(llm_response_raw)
 
         save_response(
-            str(llm_response),
+            llm_response_raw,
             self.output_folder_with_episode_index,
             model_name="qwen_agent",
             goal=lang_goal

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os.path as osp
 import pprint
+import textwrap
 from typing import Dict, List
 from collections import defaultdict
 import copy
@@ -588,8 +589,8 @@ class FindingDoryTask(OVMMDynNavRLEnv):
             )
 
         # Track valid keyframes for objects and receptacles
-        # if self._data_collection_phase:
-        #     self.track_valid_keyframes()
+        if self._data_collection_phase:
+            self.track_valid_keyframes()
             
         return self._last_observation
 
@@ -1456,20 +1457,100 @@ class FindingDoryTask(OVMMDynNavRLEnv):
     def _log_high_level_goal_comparison(self, nav_indices):
         instruction = self._sim.ep_info.instructions[self._chosen_instr_idx]
         debug_info = self._get_oracle_goal_debug_info(instruction)
-        message = (
-            "\n--------------------------> High-level goal comparison\n"
-            f"Episode id: {self._sim.ep_info.episode_id}\n"
-            f"Instruction id: {self._chosen_instr_idx}\n"
-            f"Instruction: {instruction.lang}\n"
-            f"Predicted frame indices: {nav_indices}\n"
-            "Predicted frame index space: original trajectory frame indices after mapping from any VLM subsampling.\n"
-            f"Predicted subgoal count: {len(nav_indices)}\n"
-            f"Actual subgoal count: {self._num_actual_targets}\n"
-            f"Actual subgoals:\n{pprint.pformat(debug_info['actual_subgoals'], width=120)}\n"
-            f"Ground-truth goal debug:\n{pprint.pformat(debug_info, width=120)}\n"
-        )
+        entities = debug_info['ordered_goal_entities'] or debug_info['goal_entities']
+        
+        # Build formatted comparison table
+        message_lines = [
+            "",
+            "#" * 100,
+            "# HIGH-LEVEL GOAL COMPARISON #",
+            "#" * 100,
+            f"  Episode ID: {self._sim.ep_info.episode_id} | Instruction: {self._chosen_instr_idx} ({instruction.task_id})",
+            f"  Task: {instruction.lang}",
+            "  " + "-" * 90,
+        ]
+        
+        # Summary comparison
+        message_lines.append(f"  {'Predicted Goals:':<40} {len(nav_indices)} subgoals | Frame indices: {nav_indices}")
+        message_lines.append(f"  {'Ground Truth Goals:':<40} {self._num_actual_targets} subgoals")
+        message_lines.append("  " + "-" * 90)
+        
+        # Detailed per-entity comparison
+        message_lines.append(f"  {'Entity':<40} {'Pred Frame':<15} {'GT Frames (orig)':<30} {'XYZ Position':<30}")
+        message_lines.append("  " + "-" * 110)
+        
+        for idx, entity in enumerate(entities):
+            # Get predicted frame for this entity
+            pred_frame = nav_indices[idx] if idx < len(nav_indices) else "N/A"
+            
+            # Get ground truth frames for this entity
+            gt_frames = debug_info['entity_keyframes'].get(entity, [-1])
+            gt_frames_str = str(gt_frames) if gt_frames else "[-1]"
+            
+            # Get entity position
+            entity_pos = self._get_entity_position(entity)
+            pos_str = f"({entity_pos[0]:.2f}, {entity_pos[1]:.2f}, {entity_pos[2]:.2f})" if entity_pos else "Unknown"
+            
+            message_lines.append(f"  {entity:<40} {str(pred_frame):<15} {gt_frames_str:<30} {pos_str:<30}")
+        
+        # Ground truth subgoals summary
+        actual_subgoals = debug_info.get('actual_subgoals', [])
+        if actual_subgoals:
+            message_lines.append("  " + "-" * 90)
+            message_lines.append("  Ground-truth subgoals (entity + frame indices):")
+            for sg in actual_subgoals:
+                message_lines.append(
+                    f"    [{sg['subgoal_index']}] entity={sg['entity']}, valid_original_frame_indices={sg['valid_original_frame_indices']}"
+                )
+        
+        # Prediction success summary
+        success_metrics = getattr(self, '_full_success_metrics', None)
+        if success_metrics:
+            message_lines.append("  " + "-" * 90)
+            message_lines.append("  Prediction Success Metrics:")
+            for entity_name, metrics in success_metrics.items():
+                success = metrics.get('success', False)
+                dist = metrics.get('dist_to_goal', 'N/A')
+                sem_cov = metrics.get('semantic_cov', 'N/A')
+                in_view = not metrics.get('tgt_not_in_view', True)
+                status = "SUCCESS" if success else "FAIL"
+                message_lines.append(
+                    f"    [{status}] entity={entity_name[:50]}... | dist={dist:.2f} | sem_cov={sem_cov:.3f} | in_view={in_view}"
+                )
+        
+        message_lines.append("#" * 100)
+        
+        message = "\n".join(message_lines)
         print(message)
         logger.info(message)
+    
+    def _get_entity_position(self, entity_name):
+        """Get XYZ position of an entity (object or receptacle)."""
+        try:
+            rom = self._sim.get_rigid_object_manager()
+            try:
+                # Try to get as a rigid object first
+                obj = rom.get_object_by_handle(entity_name)
+                trans = obj.transformation.translation
+                return [float(trans[0]), float(trans[1]), float(trans[2])]
+            except Exception:
+                pass
+            
+            # Try to get as a receptacle or semantic object
+            try:
+                sem_scene = self._sim.semantic_scene
+                if sem_scene and hasattr(sem_scene, 'objects'):
+                    for obj in sem_scene.objects:
+                        if hasattr(obj, 'handle') and obj.handle == entity_name:
+                            if hasattr(obj, 'aabb'):
+                                center = obj.aabb.center
+                                return [float(center[0]), float(center[1]), float(center[2])]
+            except Exception:
+                pass
+            
+            return None
+        except Exception:
+            return None
 
     def _get_oracle_goal_debug_info(self, instruction):
         valid_entities = []
@@ -1488,9 +1569,21 @@ class FindingDoryTask(OVMMDynNavRLEnv):
         entities_to_report = ordered_entities or valid_entities
         entity_keyframes = {}
         actual_subgoals = []
+        
+        # Debug: Print what's being tracked in _entity_keyframes
+        logger.info(f"DEBUG: All tracked entities in _entity_keyframes: {list(self._entity_keyframes.keys())}")
+        logger.info(f"DEBUG: Goal entities from expression: {valid_entities}")
+        
         for subgoal_index, entity in enumerate(entities_to_report):
             frames = self._get_valid_keyframes_for_entity(entity)
             entity_keyframes[entity] = frames or [-1]
+            
+            # Log frame tracking info
+            if frames:
+                logger.info(f"DEBUG: Entity '{entity}' has frames: {frames}")
+            else:
+                logger.info(f"DEBUG: Entity '{entity}' has NO frames (using [-1])")
+            
             actual_subgoals.append(
                 {
                     "subgoal_index": subgoal_index,

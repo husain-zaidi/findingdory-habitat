@@ -185,17 +185,26 @@ class VLMMapperAgent(QwenAgent):
                                     
                 # The predicted VLM subgoals need to be verified for task success -> so we return the predicted subgoals as an "action_dict" and pass it to the task for PDDL verification
                 # Clip nav indices to valid range
-                print("--------------------------> Frame index returned by VLM: ", self.nav_indices)
+                print("=" * 80)
+                print(f">>> TASK: {self.task_id}")
+                print(f">>> Frame index returned by VLM (subsampled space): {self.nav_indices}")
+                print(f">>> Subsampled frame space size: len(_frame_num_to_original_frame_num) = {len(self._frame_num_to_original_frame_num)}")
+                
                 clipped_indices = [max(0, min(idx, len(self._frame_num_to_original_frame_num) - 1)) for idx in self.nav_indices]
                 output_nav_indices = [self._frame_num_to_original_frame_num[idx] for idx in clipped_indices]
                 self._clipped_indices = clipped_indices
                 
-                print(
-                    "--------------------------> Predicted frame index mapping "
-                    "(VLM/subsampled -> clipped subsampled -> original trajectory): ",
-                    list(zip(self.nav_indices, clipped_indices, output_nav_indices)),
-                )
-                print("--------------------------> Predicted (clipped) frame indices mapped to original indices: ", output_nav_indices)
+                # Log which indices were clipped (out of bounds)
+                clipped_flag = ""
+                for i, (orig, cl) in enumerate(zip(self.nav_indices, clipped_indices)):
+                    if orig != cl:
+                        clipped_flag = f" [WARNING: index {orig} was clipped to {cl}]"
+                
+                mapping = list(zip(self.nav_indices, clipped_indices, output_nav_indices))
+                print(f">>> Predicted frame index mapping (VLM/subsampled -> clipped subsampled -> original trajectory): {mapping}{clipped_flag}")
+                print(f">>> Predicted (clipped) frame indices mapped to original indices: {output_nav_indices}")
+                print("<<< END VLM FRAME INDEX LOGGING")
+                print("=" * 80, flush=True)
 
                 # The predicted VLM subgoals need to be verified for task success -> so we return the predicted subgoals as an "action_dict" and pass it to the task for PDDL verification
                 action = {

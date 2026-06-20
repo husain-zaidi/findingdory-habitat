@@ -208,8 +208,9 @@ class VLMAgent(Agent):
             # Convert RGB to BGR for OpenCV compatibility
             img_bgr = cv2.cvtColor(obs['head_rgb'], cv2.COLOR_RGB2BGR)
 
-            # Define texts to display
-            frame_text = f"Frame: {idx}"
+            # Show the original trajectory frame number so the model picks from the correct set
+            original_frame_num = self._frame_num_to_original_frame_num[idx]
+            frame_text = f"Frame: {idx} (orig: {original_frame_num})"
             time_of_day_text = f"Time of Day: {obs['time_of_day']}"
 
             # Define font settings

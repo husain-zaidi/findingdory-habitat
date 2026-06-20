@@ -274,9 +274,10 @@ class FindingDoryMultiTask(FindingDoryTask):
             )
             self._oracle_agent_final_pose = self._sim.get_agent_state()
 
-        # Track valid keyframes for objects and receptacles      # TODO: This should be uncommented when generating oracle keyframe solutions and will slow down significantly due to large number of PDDL verifications at each sim step
-        # if self._data_collection_phase: 
-        #     self.track_valid_keyframes()
+        # Track valid keyframes for objects and receptacles
+        # Note: This performs PDDL verifications at each step which can be slow, but is necessary for accurate ground truth logging
+        if self._data_collection_phase: 
+            self.track_valid_keyframes()
             
         return self._last_observation
     
